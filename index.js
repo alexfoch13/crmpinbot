@@ -51,3 +51,5 @@ app.listen(PORT, () => {
 });
 
 bot.launch();
+
+console.log("ENV TOKEN:", process.env.TELEGRAM_BOT_TOKEN ? "OK" : "MISSING");
