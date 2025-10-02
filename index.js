@@ -1,57 +1,41 @@
-// index.js
-const express = require("express");
-const { Telegraf } = require("telegraf");
-
-const app = express();
-const PORT = process.env.PORT || 8080;
-
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
-
-if (!BOT_TOKEN) {
-  console.error("❌ Нет TELEGRAM_BOT_TOKEN в ENV");
-  process.exit(1);
-}
-
-const bot = new Telegraf(BOT_TOKEN);
-
-// Health-check
-app.get("/health", (_, res) => res.send("ok"));
-
-// FTD webhook
 app.get("/ftd-hook", async (req, res) => {
-  const { token, subid, payout, status, currency } = req.query;
+  const token = req.query.token;
+  const subid = req.query.subid || "-";
+  const status = (req.query.status || "").toLowerCase();
+  const curr = (req.query.currency || "usd").toUpperCase();
 
-  // DEBUG лог
-  console.log(`[FTD-HOOK] token=${token}, subid=${subid}, payout=${payout}, status=${status}, currency=${currency}`);
+  // ✅ Универсальный парсинг payout под разные ПП
+  const payout =
+    req.query.payout ||
+    req.query.revenue ||
+    req.query.sum ||
+    "0";
 
-  // Проверка токена
-  if (token !== WEBHOOK_TOKEN) {
+  // проверка токена
+  if (token !== process.env.WEBHOOK_TOKEN) {
     console.log("❌ Bad token");
     return res.status(403).send("Bad token");
   }
 
+  // проверка статуса
   const allowed = ["confirmed", "approved", "sale", "success"];
-  const st = (status || "").toLowerCase();
-
-  if (!allowed.includes(st)) {
-    console.log(`⚠️ Skip by status: ${status}`);
+  if (!allowed.includes(status)) {
+    console.log(`⏩ Skip by status: ${status}`);
     return res.json({ ok: true, ignored: "status" });
   }
 
-  const text = `✅ FTD\nSubID: ${subid}\nPayout: ${payout} ${currency}\nStatus: ${status}`;
+  // форматируем сообщение
+  const text = `✅ FTD
+SubID: ${subid}
+Payout: ${payout} ${curr}
+Status: ${status}`;
 
   try {
-    await bot.telegram.sendMessage(CHAT_ID, text);
-    console.log("📩 Отправлено в Telegram");
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("⚠️ Ошибка Telegram:", e.response || e);
-    return res.status(500).json({ ok: false });
+    await bot.telegram.sendMessage(process.env.TELEGRAM_CHAT_ID, text);
+    console.log("📩 Sent to Telegram:", text);
+    return res.json({ ok: true, sent: true });
+  } catch (err) {
+    console.error("⚠️ Telegram send error:", err.message);
+    return res.status(500).send("Telegram send error");
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server started on port ${PORT}`);
 });
