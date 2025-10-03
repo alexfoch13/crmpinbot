@@ -1,122 +1,118 @@
-// ====== env ======
-// Нужны переменные окружения:
-// TELEGRAM_BOT_TOKEN  — токен бота
-// ALLOWED_USER_IDS    — кому слать (через запятую), напр. "8442616298,8048147283"
-// WEBHOOK_SECRET      — shared secret из постбека, напр. "super_long_random_secret"
-// PORT                — порт (по умолчанию 8080)
+// index.js
+import express from "express";
+import { Telegraf } from "telegraf";
 
-const express = require("express");
-const fetch = require("node-fetch");
-const { Telegraf } = require("telegraf");
+// --- ENV с поддержкой старых/новых названий ---
+const BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const SECRET = process.env.WEBHOOK_SECRET;
-const PORT = process.env.PORT || 8080;
+const WEBHOOK_SECRET =
+  process.env.WEBHOOK_TOKEN || process.env.WEBHOOK_SECRET;
 
-if (!BOT_TOKEN || !SECRET) {
-  console.error("ENV error: TELEGRAM_BOT_TOKEN and WEBHOOK_SECRET are required");
-  process.exit(1);
-}
+const ALLOWED_USER_IDS =
+  process.env.TELEGRAM_CHAT_ID || process.env.ADMIN_CHAT_ID || process.env.ALLOWED_USER_IDS || "";
 
-const app = express();
-const bot = new Telegraf(BOT_TOKEN);
-
-// Статусы, на которые реагируем (остальные игнорим, чтобы не спамить)
-const ALLOWED_STATUSES = new Set(["sale", "confirmed", "approved", "success"]);
-
-// кому отправлять уведомления
-const USER_IDS = (process.env.ALLOWED_USER_IDS || "")
+// Список чатов для уведомлений
+const CHAT_IDS = ALLOWED_USER_IDS
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Хелпер: безопасно взять первое непустое значение из списка ключей
-function pick(q, keys, fallback = "") {
-  for (const k of keys) {
-    if (q[k] !== undefined && q[k] !== null && String(q[k]).trim() !== "") {
-      return String(q[k]).trim();
-    }
-  }
-  return fallback;
+// Базовые проверки ENV
+if (!BOT_TOKEN || !WEBHOOK_SECRET) {
+  console.error("ENV error: TELEGRAM_BOT_TOKEN (или BOT_TOKEN) и WEBHOOK_TOKEN (или WEBHOOK_SECRET) обязательны");
+  process.exit(1);
 }
 
-// Простой health-check
-app.get("/health", (_req, res) => res.status(200).send("ok"));
+// --- Telegram bot ---
+const bot = new Telegraf(BOT_TOKEN);
 
-// Основной хук для FTD
+// Простая команда /ping (для проверки)
+bot.command("ping", async (ctx) => ctx.reply("pong ✅"));
+
+// --- Web server ---
+const app = express();
+const PORT = process.env.PORT || 8080;
+
+app.get("/", (_req, res) => res.send("OK"));
+
+/**
+ * Webhook для FTD
+ * Пример: /ftd-hook?token=...&subid=XXX&payout=24&status=sale&currency=usd&source=pinup
+ *
+ * Поддержка альтернатив:
+ * - subid: subid | sub_id | sub_id1 | {subId1} (после кейтаро макросов станет значением)
+ * - payout: payout | payment | revenue
+ * - status: status
+ * - currency: currency
+ * - source: source (опционально, чтобы понимать откуда прилетело)
+ */
 app.get("/ftd-hook", async (req, res) => {
   try {
-    // 1) безопасность
-    const token = req.query.token;
-    if (token !== SECRET) {
-      return res.status(403).json({ ok: false, error: "bad token" });
+    const { token } = req.query;
+
+    if (token !== WEBHOOK_SECRET) {
+      return res.status(403).json({ ok: false, error: "Bad token" });
     }
 
-    // 2) собираем поля из разных кейсов
-    const subid = pick(req.query, [
-      "subid",
-      "sub_id",
-      "sub",
-      "sub1",
-      "sub_id1",
-      "subId1",
-      "clickid",
-      "click_id",
-    ]);
+    // Параметры из разных сеток
+    const subid =
+      req.query.subid ||
+      req.query.sub_id ||
+      req.query.sub_id1 ||
+      req.query.subId ||
+      req.query.subId1 ||
+      "";
 
-    // payout/revenue/payment — у сеток бывает по-разному
-    const payoutStr = pick(req.query, ["payout", "revenue", "payment"], "0");
-    // приводим к числу с 2 знаками — если пусто/мусор, будет 0.00
-    const payout = Number(payoutStr.replace(",", "."));
-    const payoutFmt = isFinite(payout) ? payout.toFixed(2) : "0.00";
+    const payoutRaw =
+      req.query.payout ||
+      req.query.payment ||
+      req.query.revenue ||
+      "0";
 
-    const status = pick(req.query, ["status"], "").toLowerCase();
-    const currency = (pick(req.query, ["currency"], "USD") || "USD").toUpperCase();
+    const status = (req.query.status || "").toLowerCase();
+    const currency = (req.query.currency || "usd").toUpperCase();
+    const source = req.query.source || "n/a";
 
-    // geo могут передавать как geo/country/cc и т.п.
-    const geo = pick(req.query, ["geo", "country", "cc", "country_code"], "-").toUpperCase();
-
-    // источник: руками в постбеке ставим source=pinup/glory (но можно и не ставить)
-    const source = pick(req.query, ["source", "src", "network"], "-");
-
-    // 3) фильтр статуса
-    if (!ALLOWED_STATUSES.has(status)) {
+    // Отфильтруем «мусорные» статусы
+    const ALLOWED = ["confirmed", "approved", "sale", "success"];
+    if (!ALLOWED.includes(status)) {
       return res.json({ ok: true, ignored: "status" });
     }
 
-    // 4) собираем текст
-    const lines = [
-      "✅ FTD",
-      `SubID: ${subid || "-"}`,
-      `Payout: ${payoutFmt} ${currency}`,
-      `Status: ${status}`,
-      `GEO: ${geo || "-"}`,
-      `Source: ${source || "-"}`,
-    ];
-    const text = lines.join("\n");
+    const payout = Number(payoutRaw) || 0;
 
-    // 5) отправляем всем, кто в ALLOWED_USER_IDS
-    const sendJobs = USER_IDS.map((id) => bot.telegram.sendMessage(id, text));
-    await Promise.allSettled(sendJobs);
+    // Сообщение в TG
+    const text =
+      `✅ FTD\n` +
+      `SubID: ${subid || "—"}\n` +
+      `Payout: ${payout} ${currency}\n` +
+      `Status: ${status}\n` +
+      `Source: ${source}`;
+
+    // Отправка всем разрешённым чатам
+    await Promise.all(
+      CHAT_IDS.map((id) => bot.telegram.sendMessage(id, text))
+    );
 
     return res.json({ ok: true });
-  } catch (err) {
-    console.error("ftd-hook error:", err);
-    return res.status(500).json({ ok: false, error: "internal" });
+  } catch (e) {
+    console.error("HOOK ERROR:", e);
+    return res.status(500).json({ ok: false, error: "server" });
   }
 });
 
-// Старт сервера и бота (polling)
+// запуск
 app.listen(PORT, async () => {
   console.log(`🚀 Server started on port ${PORT}`);
   try {
     await bot.launch();
     console.log("🤖 Bot launched");
   } catch (e) {
-    console.error("Bot launch error:", e);
+    console.error("BOT LAUNCH ERROR:", e.message);
   }
 });
 
-// Красиво останавливаем бота (Railway/Heroku и т.п.)
+// Корректное завершение
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
