@@ -67,9 +67,15 @@ app.get("/ftd-hook", async (req, res) => {
       req.query.revenue ||
       "0";
 
+    const geo =
+  (req.query.geo || req.query.country || req.query.cc || req.query.country_code || "-")
+    .toString()
+    .toUpperCase();
+
     const status = (req.query.status || "").toLowerCase();
     const currency = (req.query.currency || "usd").toUpperCase();
     const source = req.query.source || "n/a";
+    
 
     const ALLOWED = ["confirmed", "approved", "sale", "success"];
     if (!ALLOWED.includes(status)) {
@@ -83,6 +89,7 @@ app.get("/ftd-hook", async (req, res) => {
       `SubID: ${subid || "—"}\n` +
       `Payout: ${payout} ${currency}\n` +
       `Status: ${status}\n` +
+      `GEO: ${geo}\n` +
       `Source: ${source}`;
 
     await Promise.all(
