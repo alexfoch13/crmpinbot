@@ -1,6 +1,6 @@
-// index.js
-import express from "express";
-import { Telegraf } from "telegraf";
+// index.js (CommonJS)
+const express = require("express");
+const { Telegraf } = require("telegraf");
 
 // --- ENV с поддержкой старых/новых названий ---
 const BOT_TOKEN =
@@ -26,8 +26,6 @@ if (!BOT_TOKEN || !WEBHOOK_SECRET) {
 
 // --- Telegram bot ---
 const bot = new Telegraf(BOT_TOKEN);
-
-// Простая команда /ping (для проверки)
 bot.command("ping", async (ctx) => ctx.reply("pong ✅"));
 
 // --- Web server ---
@@ -41,11 +39,11 @@ app.get("/", (_req, res) => res.send("OK"));
  * Пример: /ftd-hook?token=...&subid=XXX&payout=24&status=sale&currency=usd&source=pinup
  *
  * Поддержка альтернатив:
- * - subid: subid | sub_id | sub_id1 | {subId1} (после кейтаро макросов станет значением)
+ * - subid: subid | sub_id | sub_id1 | subId | subId1
  * - payout: payout | payment | revenue
  * - status: status
  * - currency: currency
- * - source: source (опционально, чтобы понимать откуда прилетело)
+ * - source: source (опционально)
  */
 app.get("/ftd-hook", async (req, res) => {
   try {
@@ -55,7 +53,6 @@ app.get("/ftd-hook", async (req, res) => {
       return res.status(403).json({ ok: false, error: "Bad token" });
     }
 
-    // Параметры из разных сеток
     const subid =
       req.query.subid ||
       req.query.sub_id ||
@@ -74,7 +71,6 @@ app.get("/ftd-hook", async (req, res) => {
     const currency = (req.query.currency || "usd").toUpperCase();
     const source = req.query.source || "n/a";
 
-    // Отфильтруем «мусорные» статусы
     const ALLOWED = ["confirmed", "approved", "sale", "success"];
     if (!ALLOWED.includes(status)) {
       return res.json({ ok: true, ignored: "status" });
@@ -82,7 +78,6 @@ app.get("/ftd-hook", async (req, res) => {
 
     const payout = Number(payoutRaw) || 0;
 
-    // Сообщение в TG
     const text =
       `✅ FTD\n` +
       `SubID: ${subid || "—"}\n` +
@@ -90,7 +85,6 @@ app.get("/ftd-hook", async (req, res) => {
       `Status: ${status}\n` +
       `Source: ${source}`;
 
-    // Отправка всем разрешённым чатам
     await Promise.all(
       CHAT_IDS.map((id) => bot.telegram.sendMessage(id, text))
     );
@@ -102,7 +96,6 @@ app.get("/ftd-hook", async (req, res) => {
   }
 });
 
-// запуск
 app.listen(PORT, async () => {
   console.log(`🚀 Server started on port ${PORT}`);
   try {
@@ -113,6 +106,5 @@ app.listen(PORT, async () => {
   }
 });
 
-// Корректное завершение
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
