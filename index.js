@@ -3,24 +3,22 @@ const express = require("express");
 const { Telegraf } = require("telegraf");
 
 // --- ENV с поддержкой старых/новых названий ---
-const BOT_TOKEN =
-  process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
-
-const WEBHOOK_SECRET =
-  process.env.WEBHOOK_TOKEN || process.env.WEBHOOK_SECRET;
-
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
+const WEBHOOK_SECRET = process.env.WEBHOOK_TOKEN || process.env.WEBHOOK_SECRET;
 const ALLOWED_USER_IDS =
-  process.env.TELEGRAM_CHAT_ID || process.env.ADMIN_CHAT_ID || process.env.ALLOWED_USER_IDS || "";
+  process.env.TELEGRAM_CHAT_ID ||
+  process.env.ADMIN_CHAT_ID ||
+  process.env.ALLOWED_USER_IDS ||
+  "";
 
 // Список чатов для уведомлений
-const CHAT_IDS = ALLOWED_USER_IDS
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const CHAT_IDS = ALLOWED_USER_IDS.split(",").map(s => s.trim()).filter(Boolean);
 
 // Базовые проверки ENV
 if (!BOT_TOKEN || !WEBHOOK_SECRET) {
-  console.error("ENV error: TELEGRAM_BOT_TOKEN (или BOT_TOKEN) и WEBHOOK_TOKEN (или WEBHOOK_SECRET) обязательны");
+  console.error(
+    "ENV error: TELEGRAM_BOT_TOKEN (или BOT_TOKEN) и WEBHOOK_TOKEN (или WEBHOOK_SECRET) обязательны"
+  );
   process.exit(1);
 }
 
@@ -36,30 +34,21 @@ app.get("/", (_req, res) => res.send("OK"));
 
 /**
  * Webhook для FTD
- * Пример: /ftd-hook?token=...&subid=XXX&payout=24&status=sale&currency=usd&source=pinup
+ * Пример: /ftd-hook?token=...&payout=24&status=sale&currency=usd&source=pinup&geo=AZ
  *
  * Поддержка альтернатив:
- * - subid: subid | sub_id | sub_id1 | subId | subId1
  * - payout: payout | payment | revenue
  * - status: status
  * - currency: currency
- * - source: source (опционально)
+ * - source: source (опционально, например pinup / glory)
+ * - geo: geo | country | cc | country_code | (fallback: sub_id2)
  */
 app.get("/ftd-hook", async (req, res) => {
   try {
     const { token } = req.query;
-
     if (token !== WEBHOOK_SECRET) {
       return res.status(403).json({ ok: false, error: "Bad token" });
     }
-
-    const subid =
-      req.query.subid ||
-      req.query.sub_id ||
-      req.query.sub_id1 ||
-      req.query.subId ||
-      req.query.subId1 ||
-      "";
 
     const payoutRaw =
       req.query.payout ||
@@ -67,16 +56,31 @@ app.get("/ftd-hook", async (req, res) => {
       req.query.revenue ||
       "0";
 
-    const geo =
-  (req.query.geo || req.query.country || req.query.cc || req.query.country_code || "-")
-    .toString()
-    .toUpperCase();
+    // GEO: сначала ищем явный параметр, иначе пробуем подхватить из sub_id2
+    let geo =
+      req.query.geo ||
+      req.query.country ||
+      req.query.cc ||
+      req.query.country_code ||
+      req.query.sub_id2 || // fallback, если GEO кладёшь во 2-й саб
+      "";
+
+    geo = geo.toString().toUpperCase() || "N/A";
 
     const status = (req.query.status || "").toLowerCase();
     const currency = (req.query.currency || "usd").toUpperCase();
-    const source = req.query.source || "n/a";
-    
+    const sourceRaw = (req.query.source || "").toLowerCase();
 
+    // Нормализуем название партнёрки
+    let partner = "Unknown";
+    if (sourceRaw.includes("pinup")) partner = "Pin-Up Partners";
+    else if (sourceRaw.includes("glory")) partner = "GloryCasino";
+    else if (sourceRaw) {
+      // Просто капитализуем, если что-то пришло
+      partner = sourceRaw.charAt(0).toUpperCase() + sourceRaw.slice(1);
+    }
+
+    // Разрешённые статусы
     const ALLOWED = ["confirmed", "approved", "sale", "success"];
     if (!ALLOWED.includes(status)) {
       return res.json({ ok: true, ignored: "status" });
@@ -84,17 +88,15 @@ app.get("/ftd-hook", async (req, res) => {
 
     const payout = Number(payoutRaw) || 0;
 
+    // --- Новый формат сообщения ---
     const text =
-      `✅ FTD\n` +
-      `SubID: ${subid || "—"}\n` +
-      `Payout: ${payout} ${currency}\n` +
-      `Status: ${status}\n` +
-      `GEO: ${geo}\n` +
-      `Source: ${source}`;
+`✅ FTD
+🌍 GEO: ${geo}
+🎰 Партнёрка: ${partner}
+💵 Депозит: ${payout} ${currency}
+📌 Статус: ${status}`;
 
-    await Promise.all(
-      CHAT_IDS.map((id) => bot.telegram.sendMessage(id, text))
-    );
+    await Promise.all(CHAT_IDS.map((id) => bot.telegram.sendMessage(id, text)));
 
     return res.json({ ok: true });
   } catch (e) {
